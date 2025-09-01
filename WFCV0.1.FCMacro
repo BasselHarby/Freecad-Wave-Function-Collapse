@@ -1,0 +1,426 @@
+import sys
+import FreeCAD
+import random
+import FreeCADGui
+import Mesh
+# WFC Implmentation from https://urielgarcilazo.com/tutorials/4_WaveFunctionCollapse.html
+# Original Tile set
+# G: Ground, A: AIR, X: None, C: Corridor, CF, corridor flipped, T: T junc, :TF: T junc flipped, R: room, 
+#CEU: corridor end up, CEUF: corridor end up flipped
+
+
+
+Tileset = [{"ID":"2C1L1A","SOCKETS": ["A","C", "A", "CEU", "R", "R"],"R":-1},
+			{"ID":"3C1S","SOCKETS": ["A","C", "A", "C", "R", "R"],"R":-1},
+			{"ID":"4C1","SOCKETS": ["A","C", "A", "C", "R", "R"],"R":-1},
+			{"ID":"T","SOCKETS": ["T","C", "A", "C", "R", "R"],"R":-1},
+			{"ID":"3C1T1S","SOCKETS": ["A","C", "A", "C", "R", "R"],"R":-1},
+			{"ID":"4C2","SOCKETS": ["A","C", "A", "C", "R", "R"],"R":-1},
+			{"ID":"2C1L1AF","SOCKETS": ["A","CF", "A", "CEUF", "R", "R"],"R":-1},
+			{"ID":"3C1SF","SOCKETS": ["A","CF", "A", "CF", "R", "R"],"R":-1},
+			{"ID":"4CF","SOCKETS": ["A","CF", "A", "CF", "R", "R"],"R":-1},
+			{"ID":"TF","SOCKETS": ["A","CTF", "TF", "CF", "R", "R"],"R":-1}]
+
+#"ID":"Lib","SOCKETS": ["TF","C", "C", "A", "G", "X"],"R":-1}
+#{"ID":"MPH","SOCKETS": ["A","A", "C", "CTF", "G", "X"],"R":-1}
+#Function to create a rotated array for the tile set 
+def rotateSockets(sockets, angle):
+	tsockets = sockets.copy()
+	above = tsockets.pop()
+	below = tsockets.pop()
+	nsockets = [tsockets[i-angle] for i in range(4)]
+	nsockets.append(below)
+	nsockets.append(above)
+	return nsockets
+
+#Crate a new tile set that includes rotated versions
+
+
+def PlaceTile( x, y,z, name):
+	#Create Placement Vector
+	pl =  FreeCAD.Placement(FreeCAD.Vector(x,y,z), FreeCAD.Rotation(FreeCAD.Vector(0,0,1),0))
+	box = FreeCAD.ActiveDocument.getObjectsByLabel(name)[0]
+	box.Placement = pl
+
+# ****************************************** GRID TILES	 *************************************************		
+# The Grid tile class, C is the column index, R is the row index, tile class in the original impl.
+
+
+def socketMatch(Socket, targetsocket):
+	if Socket != targetsocket:
+		return False
+	return True
+
+# draw a tile in freecad
+def addTile(tile):
+	if tile.name != "Air" and tile.name != "Void" :
+		PlaceTile(tile.x, tile.y, tile.z,tile.name)
+
+class GridTile:
+	def __init__(self,c,r,l):
+		self.c = c
+		self.r = r
+		self.l = l
+		self.x = self.c * RES[0] 
+		self.y = self.r * RES[1]
+		self.z = self.l * RES[2]
+		self.tile = None # the actual freecad tile to place
+		# attr. related to WFC
+		self.entropy = len(RotTileset) # inital entropy
+		#self.potentialTiles = list(RotTileset) # copy of the original tiles
+		self.collapsed = False
+		self.name = None
+		self.sockets = ["" for _ in range(6)]
+		self.RIGHT_neigh = {"COLLAPSED": None, "SOCKET": None, "Name": None}
+		self.DOWN_neigh = {"COLLAPSED": None, "SOCKET": None, "Name": None}
+		self.LEFT_neigh = {"COLLAPSED": None, "SOCKET": None, "Name": None}
+		self.UP_neigh = {"COLLAPSED": None, "SOCKET": None, "Name": None}
+		self.BELOW_neigh = {"COLLAPSED": None, "SOCKET": None, "Name": None}
+		self.ABOVE_neigh = {"COLLAPSED": None, "SOCKET": None, "Name": None}
+
+	def updateEntropy(self, lowestEntropy): #lowest entropy is a global variable
+		placeHolderTileSet = []
+		for potTile in RotTileset:
+			validTile = True
+			if self.RIGHT_neigh["COLLAPSED"] and not socketMatch(potTile["SOCKETS"][0], self.RIGHT_neigh["SOCKET"]):
+				validTile = False
+			if self.DOWN_neigh["COLLAPSED"] and not socketMatch(potTile["SOCKETS"][1], self.DOWN_neigh["SOCKET"]):
+				validTile = False
+			if self.LEFT_neigh["COLLAPSED"] and not socketMatch(potTile["SOCKETS"][2], self.LEFT_neigh["SOCKET"]):
+				validTile = False
+			if self.UP_neigh["COLLAPSED"] and not socketMatch(potTile["SOCKETS"][3], self.UP_neigh["SOCKET"]):
+				validTile = False
+			if self.BELOW_neigh["COLLAPSED"] and not socketMatch(potTile["SOCKETS"][4], self.BELOW_neigh["SOCKET"]):
+				validTile = False
+			if self.ABOVE_neigh["COLLAPSED"] and not socketMatch(potTile["SOCKETS"][5], self.ABOVE_neigh["SOCKET"]):
+				validTile = False
+			if  (not self.DOWN_neigh["COLLAPSED"] and  not self.UP_neigh["COLLAPSED"] and (self.RIGHT_neigh["Name"] =="Air" or self.LEFT_neigh["Name"] =="Air") ):
+				validTile =False
+			# if a valid tile found, append it to the temp tile set
+			if validTile: 
+				placeHolderTileSet.append(potTile)
+		# Update potintial tiles to the new valid tiles set
+		self.potentialTiles = placeHolderTileSet
+		# the entorpy could be simply the length of potential tiles,
+		# but in the original implementation , rotations are excluded from the length of p
+		self.entropy = len(self.potentialTiles)
+		if self.l >0 and not self.BELOW_neigh["COLLAPSED"]:
+			self.entropy =10000
+
+		if (lowestEntropy == None or self.entropy < lowestEntropy) and self.entropy != 0: #check if there is a lower entropy
+			return self.entropy
+		return lowestEntropy
+		
+	def updateNeighbors(self):
+		if not self.collapsed: #if collapsed then we dont need to update neighbors
+			c = self.c #extract the column and row indexes
+			r = self.r
+			l = self.l
+			if c < DIMS[0]-1: # if we can still look to the right, ie in the before last column
+				self.RIGHT_neigh = {"COLLAPSED": grid[l][r][c+1].collapsed, "SOCKET": grid[l][r][c+1].sockets[2], "Name":grid[l][r][c+1].name } # take the Left socket
+			if r < DIMS[1]-1:
+				self.UP_neigh = {"COLLAPSED": grid[l][r+1][c].collapsed, "SOCKET": grid[l][r+1][c].sockets[1],  "Name":grid[l][r+1][c].name } # take the down socket
+			if l < DIMS[2]-1: # if we can still look up
+				self.ABOVE_neigh = {"COLLAPSED": grid[l+1][r][c].collapsed, "SOCKET": grid[l+1][r][c].sockets[4], "Name":grid[l+1][r][c].name} 
+			if c > 0: # if there is a left column
+				self.LEFT_neigh = {"COLLAPSED": grid[l][r][c-1].collapsed, "SOCKET": grid[l][r][c-1].sockets[0], "Name":grid[l][r][c-1].name}
+			if r > 0:
+				self.DOWN_neigh = {"COLLAPSED": grid[l][r-1][c].collapsed, "SOCKET": grid[l][r-1][c].sockets[3], "Name":grid[l][r-1][c].name}
+			if l > 0:
+				self.BELOW_neigh = {"COLLAPSED": grid[l-1][r][c].collapsed, "SOCKET": grid[l-1][r][c].sockets[5], "Name":grid[l-1][r][c].name}
+				
+
+	def collapse(self):
+		self.collapsed = True
+		if len(self.potentialTiles) > 0: # if we have potential tiles
+			potTile = random.choice(self.potentialTiles) #choose a random tile
+			RotTileset.remove(potTile)
+			self.name = potTile["ID"]
+			self.rot = potTile["R"]
+			self.sockets = potTile["SOCKETS"]
+			self.entropy = 0
+			addTile(self)
+
+		else: # if we reach a dead end, not implemented yet
+			print("No tile Found")
+			
+	
+	def PlantSeed(self,Tile):
+		self.collapsed = True
+		#set tile parameters and draw the tile
+		self.name = Tile["ID"]
+		self.rot = Tile["R"]
+		self.sockets = Tile["SOCKETS"]
+		self.entropy = 0
+		addTile(self)
+# ****************************************** GRID  *************************************************	
+# generate a 3d grid of tiles
+
+
+def ResetTiles(tilenames):
+	for name in tilenames:
+		pl =  FreeCAD.Placement(FreeCAD.Vector(200000,200000,0), FreeCAD.Rotation(FreeCAD.Vector(0,0,1),0))
+		box = FreeCAD.ActiveDocument.getObjectsByLabel(name)[0]
+		box.Placement = pl
+
+def update():
+	for level in grid:
+		for row in level:
+			for tile in row:
+				tile.updateNeighbors()
+
+	lowestEntropy = None
+	for level in grid:
+		for row in level:
+			for tile in row:
+				if not tile.collapsed:
+					lowestEntropy = tile.updateEntropy(lowestEntropy)
+	candidates = []
+	for level in grid:
+		for row in level:
+			for tile in row:
+				if not tile.collapsed and tile.entropy == lowestEntropy:
+					candidates.append(tile)
+
+	if len(candidates) > 0:
+		tile = random.choice(candidates)
+		tile.collapse()
+
+def createGrid(DIMS):
+	global grid
+	grid = []
+	for l in range(DIMS[2]):
+		level = []
+		for r in range(DIMS[1]):
+			row = []
+			for c in range(DIMS[0]):
+				tile = GridTile(c, r, l)
+				row.append(tile)
+			level.append(row)
+		grid.append(level)
+	return grid
+def placeinitialcells():
+	#(l,r,c)
+	# row 0
+	grid[0][0][1].PlantSeed({"ID":"2LVE","SOCKETS": ["C","A", "A", "C", "G", "X"],"R":-1})
+	grid[0][0][2].PlantSeed({"ID":"2LVEF","SOCKETS": ["A","A", "C", "C", "G","X"],"R":-1})
+	grid[0][0][3].PlantSeed({"ID":"Air","SOCKETS": ["A","A", "A", "A", "A", "A"],"R":-1})
+	grid[0][0][4].PlantSeed({"ID":"Air","SOCKETS": ["A","A", "A", "A", "A", "A"],"R":-1})
+	# row 1
+	grid[0][1][1].PlantSeed({"ID":"2LV","SOCKETS": ["C","C", "A", "C", "G", "X"],"R":-1})
+	grid[0][1][2].PlantSeed({"ID":"2LVF","SOCKETS": ["C","C", "C", "C", "G", "X"],"R":-1})
+	grid[0][1][3].PlantSeed({"ID":"2A","SOCKETS": ["A","A", "C", "C", "G", "X"],"R":-1})
+	grid[0][1][4].PlantSeed({"ID":"MPH","SOCKETS": ["A","A", "C", "CTF", "G", "X"],"R":-1})
+	# row 2
+	grid[0][2][1].PlantSeed({"ID":"2L","SOCKETS": ["C","C", "T", "A", "G", "X"],"R":-1})
+	grid[0][2][2].PlantSeed({"ID":"2LF","SOCKETS": ["C","C", "C", "A", "G", "X"],"R":-1})
+	grid[0][2][3].PlantSeed({"ID":"Lib","SOCKETS": ["TF","C", "C", "A", "G", "X"],"R":-1})
+	#Remaining air 
+	for r in range(3,6):
+		for c in range(1,4):
+			grid[0][r][c].PlantSeed({"ID":"Air","SOCKETS": ["A","A", "A", "A", "N", "N"],"R":-1})
+	#Land Constraints 
+	#grid[0][0][0].PlantSeed({"ID":"Void","SOCKETS": ["C","C", "C", "C", "N", "N"],"R":-1})
+	#grid[0][5][0].PlantSeed({"ID":"Void","SOCKETS": ["C","C", "C", "C", "N", "N"],"R":-1})
+	#grid[0][5][4].PlantSeed({"ID":"Void","SOCKETS": ["CF","CF", "CF", "CF", "CF", "CF"],"R":-1})
+
+def resettileset():
+	global RotTileset
+	RotTileset = []
+	for tile in Tileset:
+		if tile["R"] == 1:
+			for a in range(4):
+				newtiles = {"ID": tile["ID"], "SOCKETS": rotateSockets(tile["SOCKETS"], a), "R": a}
+				RotTileset.append(newtiles)
+		else:
+			RotTileset.append(tile)
+def getArea(tilenames):
+	total = DIMS[0]*RES[0]*DIMS[1]*RES[1]
+	footprint = 0
+	for c in range(DIMS[0]):
+		for r in range(DIMS[1]):
+			if grid[0][r][c].name in tilenames:
+				footprint+= RES[0]*RES[1]
+	return (footprint/total)*100
+
+RES = (12500,10000,3000) # Grid resolution
+DIMS = (5,6,2) # (nc,nr,nl)
+tilenames = ["2C1L1A","3C1S","4C1","T","3C1T1S","4C2","2C1L1AF","3C1SF","4CF","TF"]
+import time
+def WFCLoop(iterations, sleep, out,path):
+	FreeCADGui.SendMsgToActiveView("ViewFit")
+	maxitr = DIMS[0] * DIMS[1] * DIMS[2]
+	for i in range(iterations):
+		ResetTiles(tilenames)
+		resettileset()
+		createGrid(DIMS)
+		placeinitialcells()
+
+		n = 0
+		if sleep >0:
+			while (len(RotTileset) != 0 and n<maxitr):
+				time.sleep(sleep)
+				update()
+				n +=1
+				FreeCAD.activeDocument().recompute()
+				FreeCADGui.updateGui()
+		else:
+			while (len(RotTileset) != 0 and n<maxitr):
+				update()
+				n +=1
+				FreeCAD.activeDocument().recompute()
+			FreeCADGui.updateGui()
+		if out:
+			outpath = path+ "iteration"+str(i)+".png"
+			Gui.activeDocument().activeView().saveImage(outpath,1980,1080,'Transparent')
+			objs = []
+			objs.append(FreeCAD.activeDocument().getObject("Compound019"))
+			if hasattr(Mesh, "exportOptions"):
+				options = Mesh.exportOptions(path+ "iteration"+str(i)+".obj")
+				Mesh.export(objs,path+ "iteration"+str(i)+".obj", options)
+			else:
+				Mesh.export(objs,path+ "iteration"+str(i)+".obj")
+			objs[0].Shape.exportStep(path+ "iteration"+str(i)+".step")
+			del objs
+
+FreeCADGui.SendMsgToActiveView("ViewFit")
+maxitr = DIMS[0] * DIMS[1] * DIMS[2]
+def WFC(i, sleep, out,path):
+	ResetTiles(tilenames)
+	resettileset()
+	createGrid(DIMS)
+	placeinitialcells()
+
+	n = 0
+	if sleep >0:
+		while (len(RotTileset) != 0 and n<maxitr):
+			time.sleep(sleep)
+			update()
+			n +=1
+			FreeCAD.activeDocument().recompute()
+			FreeCADGui.updateGui()
+	else:
+		while (len(RotTileset) != 0 and n<maxitr):
+			update()
+			n +=1
+			FreeCAD.activeDocument().recompute()
+		FreeCADGui.updateGui()
+
+	if out:
+		outpath = path+ "iteration"+str(i)+".png"
+		Gui.activeDocument().activeView().saveImage(outpath,1980,1080,'Transparent')
+		objs = []
+		objs.append(FreeCAD.activeDocument().getObject("Compound019"))
+		if hasattr(Mesh, "exportOptions"):
+			options = Mesh.exportOptions(path+ "iteration"+str(i)+".obj")
+			Mesh.export(objs,path+ "iteration"+str(i)+".obj", options)
+		else:
+			Mesh.export(objs,path+ "iteration"+str(i)+".obj")
+		objs[0].Shape.exportStep(path+ "iteration"+str(i)+".step")
+		del objs
+
+
+
+#************************************* GUI *****************************************************************
+from PySide import QtCore
+from PySide import QtGui
+import csv
+
+class GUI(QtGui.QDialog):
+	""""""
+	def __init__(self):
+		super(GUI, self).__init__()
+		self.initUI()
+	def initUI(self):
+		self.result = userCancelled
+		# define window		xLoc,yLoc,xDim,yDim
+		self.setGeometry(	250, 250, 400, 260)
+		self.setWindowTitle("Wave Function Collapse")
+		self.setWindowFlags(QtCore.Qt.WindowStaysOnTopHint)
+
+		# Path selector
+			#Label
+		self.label1 = QtGui.QLabel(" Output File:", self)
+		self.label1.setFont(QtGui.QFont('Arial', 10)) # set to a non-proportional font
+		self.label1.move(20, 20)
+			#Browse Button
+		self.Browse = QtGui.QPushButton('Browse', self)
+		self.Browse.clicked.connect(self.pickpath)
+		self.Browse.setAutoDefault(False)
+		self.Browse.move(300,20 )
+			#Path Box
+		self.textbox_file_name = QtGui.QLineEdit(self)
+		self.textbox_file_name.move(90, 20)
+		self.textbox_file_name.resize(200, 20)
+		self.folder_path = ""
+		self.textbox_file_name.setText(self.folder_path)
+		self.textbox_file_name.setFont(QtGui.QFont('Arial', 8))
+
+		# Save ouotput files
+		self.out = False
+		self.checkbox1 = QtGui.QCheckBox("Save Output Files", self)
+		self.checkbox1.move(20, 60)
+		self.checkbox1.clicked.connect(self.otputcheckbox)
+
+		# Sleep time
+		self.sleep = 0
+		self.label2 = QtGui.QLabel("Sleep:", self)
+		self.label2.setFont(QtGui.QFont('Arial', 10)) # set to a non-proportional font
+		self.label2.move(20, 100)
+		self.numericInput = QtGui.QLineEdit(self)
+		self.numericInput.setText(str(self.sleep))
+		self.numericInput.setFixedWidth(50)
+		self.numericInput.move(90, 100)
+		self.label3 = QtGui.QLabel("s", self)
+		self.label3.setFont(QtGui.QFont('Arial', 10))
+		self.label3.move(145, 100)
+
+		# NO of iterations
+		self.iterations = 1
+		self.label4 = QtGui.QLabel("Iterations:", self)
+		self.label4.setFont(QtGui.QFont('Arial', 10)) 
+		self.label4.move(20, 140)
+		self.numericInput2 = QtGui.QLineEdit(self)
+		self.numericInput2.setText(str(self.iterations))
+		self.numericInput2.setFixedWidth(50)
+		self.numericInput2.move(90, 140)
+
+		# Run WFC
+		self.runbutton = QtGui.QPushButton('Run Wave Fucntion Collapse', self)
+		self.runbutton.clicked.connect(self.run)
+		self.runbutton.setAutoDefault(False)
+		self.runbutton.setFixedWidth(150)
+		self.runbutton.move(125,180)
+		self.progress = QtGui.QProgressBar(self)
+		self.progress.setFixedWidth(300)
+		self.progress.move(50,220)
+	def pickpath(self): 
+		dialog = QtGui.QFileDialog()
+		self.folder_path = dialog.getExistingDirectory(None, "Select Folder") 
+		self.folder_path = self.folder_path + "/"
+		self.textbox_file_name.setText(self.folder_path)
+	def otputcheckbox(self):
+		self.out = not self.out
+	def run(self):
+		self.sleep = float(self.numericInput.text())
+		self.iterations = int(self.numericInput2.text())
+		self.progress.setMaximum(self.iterations)
+		#WFCLoop(self.iterations,self.sleep, self.out,self.folder_path)
+		arealist = []
+		for i in range(self.iterations):
+			WFC(i,self.sleep, self.out,self.folder_path)
+			arealist.append(['iteration'+str(i), getArea(tilenames)])
+			self.progress.setValue(i+1)
+		
+		if self.out:
+			with open(self.folder_path+'Areas.csv', 'w', newline='') as myfile:
+				wr = csv.writer(myfile)
+				for item in arealist:
+					wr.writerow([item[0],item[1]])
+
+#****************************** Main ********************************************
+userCancelled = "Cancelled"
+userOK = "OK"
+
+form = GUI()
+form.exec_()
