@@ -1,6 +1,8 @@
 
 # FreeCAD Wave Function Collapse for School Layouts
 
+![Demo](https://github.com/BasselHarby/Freecad-Wave-Function-Collapse/blob/main/docs/demo.gif)
+
 A FreeCAD macro that applies the **Wave Function Collapse (WFC)** algorithm to generate and iterate different design alternatives for a school layout.  
 This project demonstrates how generative design principles can be integrated into FreeCAD for architectural and construction applications.
 
@@ -63,14 +65,6 @@ freecad-wfc-school-layout/
    *(You can run it via `Macro → Macros…` and selecting it from the list.)*
 
 3. The algorithm will iterate through layout configurations and generate alternatives.
-
----
-
-## 📺 Demo
-
-A demonstration of the macro in action:
-
-👉 [Watch the video](docs/demo.mp4)
 
 ---
 
